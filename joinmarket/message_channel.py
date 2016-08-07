@@ -119,8 +119,10 @@ class MessageChannelCollection(object):
         #Use 'O' as one of the 4 not included chars in base58.
         self.nick_pkh += 'O' * (NICK_MAX_ENCODED - len(self.nick_pkh))
         #The constructed length will be 1 + 1 + NICK_MAX_ENCODED
-        self.nick = JOINMARKET_NICK_HEADER + str(
+        self.nick_base = JOINMARKET_NICK_HEADER + str(
             jm_single().JM_VERSION) + self.nick_pkh
+        #Memory to allow nick cycling
+        self.nick = self.nick_base
         jm_single().nickname = self.nick
         for mc in self.mchannels:
             mc.set_nick(self.nick, self.nick_priv, self.nick_pubkey)

@@ -68,12 +68,6 @@ def random_nick(nick_len=9):
 def get_irc_text(line):
     return line[line[1:].find(':') + 2:]
 
-
-def get_irc_nick(source):
-    full_nick = source[1:source.find('!')]
-    return full_nick[:NICK_MAX_ENCODED+2]
-
-
 class ThrottleThread(threading.Thread):
 
     def __init__(self, irc):
@@ -195,6 +189,24 @@ class IRCMessageChannel(MessageChannel):
         self.close()
         self.give_up = True
 
+    def get_irc_nick(self, source, update=True):
+        full_nick = source[1:source.find('!')]
+        #Note that a non-JM format nick will still work, e.g.
+        #if it is less than NICK_MAX_ENCODED+2 length, then
+        #base_nick = full_nick = nick, if not the truncation is the key, also fine.
+        base_nick = full_nick[:NICK_MAX_ENCODED+2]
+        if update:
+            if full_nick not in self.counterparty_raw_nicks.values():
+                self.counterparty_raw_nicks[base_nick] = full_nick
+            return base_nick, full_nick
+        else:
+            #we won't overwrite the local storage, but will return
+            #the correct nicks if we find them
+            if full_nick in self.counterparty_raw_nicks.values():
+                return base_nick, full_nick
+            else:
+                return None, None
+
     # Maker callbacks
     def _announce_orders(self, orderlist):
         """This publishes orders to the pit and to
@@ -238,7 +250,11 @@ class IRCMessageChannel(MessageChannel):
         using chunking as appropriate for long messages.
         """
         ob = True if cmd in jm_single().ordername_list else False
-        header = "PRIVMSG " + nick + " :"
+        if nick in self.counterparty_raw_nicks:
+            parsed_nick = self.counterparty_raw_nicks[nick]
+        else:
+            parsed_nick = nick
+        header = "PRIVMSG " + parsed_nick + " :"
         max_chunk_len = MAX_PRIVMSG_LEN - len(header) - len(cmd) - 4
         # 1 for command prefix 1 for space 2 for trailer
         if len(message) > max_chunk_len:
@@ -265,7 +281,7 @@ class IRCMessageChannel(MessageChannel):
         self.lockthrottle.release()
 
     def __handle_privmsg(self, source, target, message):
-        nick = get_irc_nick(source)
+        nick, raw_nick = self.get_irc_nick(source)
         if target == self.nick:
             if message[0] == '\x01':
                 endindex = message[1:].find('\x01')
@@ -273,7 +289,7 @@ class IRCMessageChannel(MessageChannel):
                     return
                 ctcp = message[1:endindex + 1]
                 if ctcp.upper() == 'VERSION':
-                    self.send_raw('PRIVMSG ' + nick +
+                    self.send_raw('PRIVMSG ' + raw_nick +
                                   ' :\x01VERSION xchat 2.8.8 Ubuntu\x01')
                     return
 
@@ -306,11 +322,11 @@ class IRCMessageChannel(MessageChannel):
 
         _chunks = line.split(' ')
         if _chunks[1] == 'QUIT':
-            nick = get_irc_nick(_chunks[0])
-            if nick == self.nick:
+            nick, raw_nick = self.get_irc_nick(_chunks[0], update=False)
+            if raw_nick == self.nick:
                 raise IOError('we quit')
             else:
-                if self.on_nick_leave:
+                if nick and self.on_nick_leave:
                     self.on_nick_leave(nick, self)
         elif _chunks[1] == '433':  # nick in use
             # self.nick = random_nick()
@@ -362,13 +378,15 @@ class IRCMessageChannel(MessageChannel):
             if target == self.nick:
                 self.give_up = True
                 fmt = '{} has kicked us from the irc channel! Reason= {}'.format
-                raise IOError(fmt(get_irc_nick(_chunks[0]), get_irc_text(line)))
+                raise IOError(fmt(self.get_irc_nick(_chunks[0]),
+                                  get_irc_text(line)))
             else:
                 if self.on_nick_leave:
                     self.on_nick_leave(target, self)
         elif _chunks[1] == 'PART':
-            nick = get_irc_nick(_chunks[0])
-            if self.on_nick_leave:
+            #Set update false; only trigger on_nick_leave if nick is already here.
+            nick, raw_nick = self.get_irc_nick(_chunks[0], update=False)
+            if nick and self.on_nick_leave:
                 self.on_nick_leave(nick, self)
         elif _chunks[1] == '005':
             ##:port80b.se.quakenet.org 005 J5BzJGGfyw5GaPc MAXNICKLEN=15
@@ -405,6 +423,8 @@ class IRCMessageChannel(MessageChannel):
         self.pingQ = Queue.Queue()
         self.throttleQ = Queue.Queue()
         self.obQ = Queue.Queue()
+        #track the network layer nicks of all counterparties
+        self.counterparty_raw_nicks = {}
 
     def run(self):
         self.give_up = False
